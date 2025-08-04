@@ -385,7 +385,7 @@ class AdaLineHandler(ModelHandler):
             "precision": precision_score(y_true, y_pred, zero_division=0, average="macro"),
             "recall": recall_score(y_true, y_pred, zero_division=0, average="macro"),
             "f1_score": f1_score(y_true, y_pred, zero_division=0, average="macro"),
-            "auc":  roc_auc_score(y_true, auc_scores).astype(float)
+            "auc":  roc_auc_score(y_true, auc_scores)
         }
 
         return res
