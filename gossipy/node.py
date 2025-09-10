@@ -188,14 +188,14 @@ class GossipNode():
             key = self.model_handler.caching(self.idx)
             msg = Message(t, self.idx, peer, MessageType.PUSH, (key,))
             if cryptography:
-                # Cifro il messaggio usando AES con la chiave derivata
+                # Cifro il valore del messaggio usando AES con la chiave derivata
                 iv = os.urandom(16)
                 cipher = Cipher(algorithms.AES(derived_key), modes.CBC(iv))
                 encryptor = cipher.encryptor()
                 padder = padding.PKCS7(algorithms.AES.block_size).padder()
                 padded_data = padder.update(pickle.dumps(msg.value)) + padder.finalize()
                 msg.value = encryptor.update(padded_data) + encryptor.finalize()  # Il contenuto del messaggio viene cifrato
-                msg.value += iv
+                msg.value += iv # Aggiungo il vettore di inizializzazione alla fine del messaggio
             return msg
         elif protocol == AntiEntropyProtocol.PULL:
             return Message(t, self.idx, peer, MessageType.PULL, None)
@@ -241,6 +241,7 @@ class GossipNode():
             ).derive(shared_key)
 
             if msg is not None:
+                # Estraggo il vettore di inizializzazione e lo rimuovo dal messaggio cifrato
                 iv = msg.value[-16:]
                 msg.value = msg.value[:-16]
                 # Decifro il valore del messaggio usando AES con la chiave derivata
@@ -276,7 +277,7 @@ class GossipNode():
                 padder = padding.PKCS7(algorithms.AES.block_size).padder()
                 padded_data = padder.update(pickle.dumps(msg.value)) + padder.finalize()
                 msg.value = encryptor.update(padded_data) + encryptor.finalize()  # Il contenuto del messaggio viene cifrato
-                msg.value += iv
+                msg.value += iv # Aggiungo il vettore di inizializzazione alla fine del messaggio
             return reply
         return None
 
