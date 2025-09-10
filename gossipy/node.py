@@ -1,4 +1,7 @@
 from __future__ import annotations
+import json
+import os
+import pickle
 import random
 import numpy as np
 from numpy.random import randint, normal, rand
@@ -12,6 +15,15 @@ from .core import AntiEntropyProtocol, CreateModelMode, MessageType, Message, P2
 from .utils import choice_not_n
 from .model.handler import ModelHandler, PartitionedTMH, SamplingTMH, WeightedTMH
 from .model.sampling import TorchModelSampling
+
+from cryptography.hazmat.primitives.asymmetric.dh import DHParameters, DHPublicKey
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.primitives.asymmetric.dh import DHParameters, DHPublicKey
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
+from cryptography.hazmat.primitives import padding
 
 # AUTHORSHIP
 __version__ = "0.0.1"
@@ -127,7 +139,8 @@ class GossipNode():
     def send(self,
              t: int,
              peer: int,
-             protocol: AntiEntropyProtocol) -> Message:
+             protocol: AntiEntropyProtocol,
+             cryptography: bool=False) -> Message:
         """Sends a message to the specified peer.
 
         The method actually prepares the message that will be sent to the peer.
@@ -156,10 +169,34 @@ class GossipNode():
         --------
         :class:`gossipy.simul.GossipSimulator`
         """
+        if cryptography:
+            # Leggo la chiave pubblica del peer nel file json e la unisco alla chiave privata
+            json_content = None
+            with open("public_keys.json", 'r') as f:
+                json_content = json.load(f)
+            shared_key = self.private_key.exchange(load_pem_public_key(json_content[str(peer)].encode()))
+
+            # Derivo la chiave per la cifratura simmetrica
+            derived_key = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=None,
+                info=b'handshake data',
+            ).derive(shared_key)
 
         if protocol == AntiEntropyProtocol.PUSH:
             key = self.model_handler.caching(self.idx)
-            return Message(t, self.idx, peer, MessageType.PUSH, (key,))
+            msg = Message(t, self.idx, peer, MessageType.PUSH, (key,))
+            if cryptography:
+                # Cifro il messaggio usando AES con la chiave derivata
+                iv = os.urandom(16)
+                cipher = Cipher(algorithms.AES(derived_key), modes.CBC(iv))
+                encryptor = cipher.encryptor()
+                padder = padding.PKCS7(algorithms.AES.block_size).padder()
+                padded_data = padder.update(pickle.dumps(msg.value)) + padder.finalize()
+                msg.value = encryptor.update(padded_data) + encryptor.finalize()  # Il contenuto del messaggio viene cifrato
+                msg.value += iv
+            return msg
         elif protocol == AntiEntropyProtocol.PULL:
             return Message(t, self.idx, peer, MessageType.PULL, None)
         elif protocol == AntiEntropyProtocol.PUSH_PULL:
@@ -168,7 +205,7 @@ class GossipNode():
         else:
             raise ValueError("Unknown protocol %s." %protocol)
 
-    def receive(self, t: int, msg: Message) -> Union[Message, None]:
+    def receive(self, t: int, msg: Message, cryptography: bool=False) -> Union[Message, None]:
         """Receives a message from the peer.
 
         After the message is received, the local model is updated and merged according to the `mode`
@@ -188,6 +225,36 @@ class GossipNode():
             The message to be sent back to the peer. If `None`, there is no message to be sent back.
         """
 
+        if cryptography:
+            # Leggo la chiave pubblica del peer nel file json e la unisco alla chiave privata
+            json_content = None
+            with open("public_keys.json", 'r') as f:
+                json_content = json.load(f)
+            shared_key = self.private_key.exchange(load_pem_public_key(json_content[str(msg.sender)].encode()))
+
+            # Derivo la chiave per la cifratura simmetrica
+            derived_key = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=None,
+                info=b'handshake data',
+            ).derive(shared_key)
+
+            if msg is not None:
+                iv = msg.value[-16:]
+                msg.value = msg.value[:-16]
+                # Decifro il valore del messaggio usando AES con la chiave derivata
+                decryptor_cipher = Cipher(algorithms.AES(derived_key), modes.CBC(iv))
+                decryptor = decryptor_cipher.decryptor()
+                
+                decrypted_padded_data = decryptor.update(msg.value) + decryptor.finalize()
+                
+                # Rimuovo il padding
+                unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+                decrypted_data = unpadder.update(decrypted_padded_data) + unpadder.finalize()
+
+                msg.value = pickle.loads(decrypted_data)
+
         msg_type: MessageType
         recv_model: Any 
         msg_type, recv_model = msg.type, msg.value[0] if msg.value else None
@@ -200,7 +267,17 @@ class GossipNode():
         if msg_type == MessageType.PULL or \
            msg_type == MessageType.PUSH_PULL:
             key = self.model_handler.caching(self.idx)
-            return Message(t, self.idx, msg.sender, MessageType.REPLY, (key,))
+            reply = Message(t, self.idx, msg.sender, MessageType.REPLY, (key,))
+            if cryptography:
+                # Cifro il valore del messaggio usando AES con la chiave derivata
+                iv = os.urandom(16)
+                cipher = Cipher(algorithms.AES(derived_key), modes.CBC(iv))
+                encryptor = cipher.encryptor()
+                padder = padding.PKCS7(algorithms.AES.block_size).padder()
+                padded_data = padder.update(pickle.dumps(msg.value)) + padder.finalize()
+                msg.value = encryptor.update(padded_data) + encryptor.finalize()  # Il contenuto del messaggio viene cifrato
+                msg.value += iv
+            return reply
         return None
 
     def evaluate(self, ext_data: Optional[Any]=None) -> Dict[str, float]:
@@ -237,6 +314,12 @@ class GossipNode():
             return self.data[1] is not None
         else: return True
     
+    def generate_dh_keys(self, parameters : DHParameters) -> DHPublicKey:
+        # Generate a private key for use in the exchange.
+        self.private_key = parameters.generate_private_key()
+
+        return self.private_key.public_key()
+
     def __repr__(self) -> str:
         return str(self)
     

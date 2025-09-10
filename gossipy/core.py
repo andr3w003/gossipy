@@ -140,6 +140,8 @@ class Message(Sizeable):
             return self.value.get_size()
         elif isinstance(self.value, (float, int, bool)):
             return 1
+        elif isinstance(self.value, bytes):
+            return len(self.value) # Restituisce il numero di byte, per i messaggi cifrati
         else:
             raise TypeError("Cannot compute the size of the payload!")
         

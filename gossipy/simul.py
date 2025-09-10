@@ -1,6 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from copy import deepcopy
+import os
 import numpy as np
 from numpy.random import shuffle, random, choice
 from typing import Callable, DefaultDict, Optional, Dict, List, Tuple, Union, Iterable
@@ -15,6 +16,11 @@ from .node import GossipNode, All2AllGossipNode
 from .flow_control import TokenAccount
 from .model.handler import ModelHandler
 from .utils import StringEncoder
+
+from cryptography.hazmat.primitives.asymmetric import dh
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+import pickle
 
 # AUTHORSHIP
 __version__ = "0.0.1"
@@ -280,6 +286,7 @@ class GossipSimulator(SimulationEventSender):
                  online_prob: float=1., # [0,1] - probability of a node to be online
                  delay: Delay=ConstantDelay(0),
                  sampling_eval: float=0., # [0, 1] - percentage of nodes to evaluate
+                 cryptography: bool=False,
                 ):
         """Class that implements a *vanilla* gossip learning simulation.
 
@@ -336,6 +343,7 @@ class GossipSimulator(SimulationEventSender):
         self.sampling_eval = sampling_eval
         self.initialized = False
         self.nodes = nodes
+        self.cryptography = cryptography
         
 
     def init_nodes(self, seed:int=98765) -> None:
@@ -351,8 +359,23 @@ class GossipSimulator(SimulationEventSender):
         """
 
         self.initialized = True
+        if self.cryptography:
+            #Genero i parametri DH condivisi
+            parameters = dh.generate_parameters(generator=2, key_size=2048)
+            public_keys = dict()
         for _, node in self.nodes.items():
             node.init_model()
+
+            if self.cryptography:
+                #Chiedo al nodo di generare una chiave privata e di condividere la chiave pubblica corrispondente
+                node_public_key = node.generate_dh_keys(parameters)
+
+                #Inserisco la chiave pubblica in un file condiviso
+                public_keys[node.idx] = node_public_key.public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
+
+        if self.cryptography:
+            with open("public_keys.json", 'w') as f:
+                json.dump(public_keys, f, indent=4)
     
     # def add_nodes(self, nodes: List[GossipNode]) -> None:
     #     assert not self.initialized, "'init_nodes' must be called before adding new nodes."
@@ -397,7 +420,7 @@ class GossipSimulator(SimulationEventSender):
                         peer = node.get_peer()
                         if peer is None:
                             break
-                        msg = node.send(t, peer, self.protocol)
+                        msg = node.send(t, peer, self.protocol, self.cryptography)
                         self.notify_message(False, msg)
                         if msg:
                             if random() >= self.drop_prob:
@@ -409,7 +432,7 @@ class GossipSimulator(SimulationEventSender):
                 is_online = random(self.n_nodes) <= self.online_prob
                 for msg in msg_queues[t]:
                     if is_online[msg.receiver]:
-                        reply = self.nodes[msg.receiver].receive(t, msg)
+                        reply = self.nodes[msg.receiver].receive(t, msg, self.cryptography)
                         if reply:
                             if random() > self.drop_prob:
                                 d = self.delay.get(reply)
@@ -423,7 +446,7 @@ class GossipSimulator(SimulationEventSender):
                 for reply in rep_queues[t]:
                     if is_online[reply.receiver]:
                         self.notify_message(False, reply)
-                        self.nodes[reply.receiver].receive(t, reply)
+                        self.nodes[reply.receiver].receive(t, reply, self.cryptography)
                     else:
                         self.notify_message(True)
                     
