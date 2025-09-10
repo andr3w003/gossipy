@@ -16,5 +16,7 @@ setup(
                         'numpy>=1.19.2',
                         'torch>=1.8.0',
                         'scikit_learn>=1.0',
-                        'rich>=12.2.0'],
+                        'rich>=12.2.0',
+                        'torchvision',
+                        'cryptography'],
 )
